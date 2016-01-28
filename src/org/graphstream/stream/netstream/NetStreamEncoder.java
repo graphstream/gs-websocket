@@ -33,8 +33,9 @@ package org.graphstream.stream.netstream;
 
 import org.graphstream.stream.Sink;
 
+import static org.graphstream.stream.netstream.NetStreamUtils.*;
+
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 import java.util.logging.Logger;
 
 /**
@@ -43,422 +44,57 @@ import java.util.logging.Logger;
 public class NetStreamEncoder implements Sink {
     private static final Logger LOGGER = Logger.getLogger(NetStreamEncoder.class.getName());
 
-    private static ByteBuffer NULL_BUFFER = ByteBuffer.allocate(0);
-
     protected NetStreamTransport transport;
     protected String sourceId;
     protected ByteBuffer sourceIdBuff;
     protected ByteBuffer streamBuffer;
 
-    private int varintSize(long data) {
+    public NetStreamEncoder(String stream, NetStreamTransport transport) {
+        this.transport = transport;
+        streamBuffer = encodeString(stream);
+    }
 
-        // 7 bits -> 127
-        if (data < (1L << 7)) {
-            return 1;
+    protected ByteBuffer getEncodedValue(Object in, int valueType) {
+        ByteBuffer value = encodeValue(in, valueType);
+
+        if (value == null) {
+            LOGGER.warning(String.format("unknown value type %d\n", valueType));
         }
 
-        // 14 bits -> 16383
-        if (data < (1L << 14)) {
-            return 2;
-        }
-
-        // 21 bits -> 2097151
-        if (data < (1L << 21)) {
-            return 3;
-        }
-
-        // 28 bits -> 268435455
-        if (data < (1L << 28)) {
-            return 4;
-        }
-
-        // 35 bits -> 34359738367
-        if (data < (1L << 35)) {
-            return 5;
-        }
-
-        // 42 bits -> 4398046511103
-        if (data < (1L << 42)) {
-            return 6;
-        }
-
-        // 49 bits -> 562949953421311
-        if (data < (1L << 49)) {
-            return 7;
-        }
-
-        // 56 bits -> 72057594037927935
-        if (data < (1L << 56)) {
-            return 8;
-        }
-
-        return 9;
+        return value;
     }
 
-    private void putVarint(ByteBuffer buffer, long number, int byteSize) {
-        for (int i = 0; i < byteSize; i++) {
-            int head = 128;
-            if (i == byteSize - 1) head = 0;
-            long b = ((number >> (7 * i)) & 127) ^ head;
-            buffer.put((byte) (b & 255));
-        }
-    }
-
-    protected ByteBuffer encodeUnsignedVarint(Object in) {
-        long data = ((Number) in).longValue();
-
-        int size = varintSize(data);
-
-        ByteBuffer buff = ByteBuffer.allocate(size);
-        for (int i = 0; i < size; i++) {
-            int head = 128;
-            if (i == size - 1) head = 0;
-            long b = ((data >> (7 * i)) & 127) ^ head;
-            buff.put((byte) (b & 255));
-        }
-        buff.rewind();
-        return buff;
-    }
-
-    protected ByteBuffer encodeVarint(Object in) {
-        long data = ((Number) in).longValue();
-
-        // signed integers encoding
-        // (n << 1) ^ (n >> 31)
-        // OK but java's negative values are two's complements...
-
-        return encodeUnsignedVarint(data >= 0 ? (data << 1) : ((Math.abs(data) << 1) ^ 1));
-    }
-
-    protected ByteBuffer encodeString(Object in) {
-        //System.out.println("They want me to encode this string: "+in);
-        String s = (String) in;
-        byte[] data = s.getBytes(Charset.forName("UTF-8"));
-
-        ByteBuffer lenBuff = encodeUnsignedVarint(data.length);
-        //outBuffer(lenBuff);
-        ByteBuffer bb = ByteBuffer.allocate(lenBuff.capacity() + data.length);
-        bb.put(lenBuff).put(data);
-        bb.rewind();
-        //outBuffer(bb);
-
-        return bb;
-    }
-
-    protected int getType(Object value) {
-        int valueType = NetStreamConstants.TYPE_UNKNOWN;
-
-        if (value == null)
-            return NetStreamConstants.TYPE_NULL;
-
-        Class<?> valueClass = value.getClass();
-        boolean isArray = valueClass.isArray();
-        if (isArray) {
-            valueClass = ((Object[]) value)[0].getClass();
-        }
-        if (valueClass.equals(Boolean.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_BOOLEAN_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_BOOLEAN;
-            }
-        } else if (valueClass.equals(Byte.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_BYTE_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_BYTE;
-            }
-        } else if (valueClass.equals(Short.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_SHORT_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_SHORT;
-            }
-        } else if (valueClass.equals(Integer.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_INT_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_INT;
-            }
-        } else if (valueClass.equals(Long.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_LONG_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_LONG;
-            }
-        } else if (valueClass.equals(Float.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_FLOAT_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_FLOAT;
-            }
-        } else if (valueClass.equals(Double.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_DOUBLE_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_DOUBLE;
-            }
-        } else if (valueClass.equals(String.class)) {
-            if (isArray) {
-                valueType = NetStreamConstants.TYPE_ARRAY;
-            } else {
-                valueType = NetStreamConstants.TYPE_STRING;
-            }
-        } else
-            System.err.printf("[warning] can not find type of %s\n", valueClass);
-        // System.out.println("ValueType="+valueType+" "+value.getClass());
-        return valueType;
-    }
-
-    protected ByteBuffer encodeValue(Object in, int valueType) {
-
-        if (NetStreamConstants.TYPE_BOOLEAN == valueType) {
-            return encodeBoolean(in);
-        } else if (NetStreamConstants.TYPE_BOOLEAN_ARRAY == valueType) {
-            return encodeBooleanArray(in);
-        } else if (NetStreamConstants.TYPE_BYTE == valueType) {
-            return encodeByte(in);
-        } else if (NetStreamConstants.TYPE_BYTE_ARRAY == valueType) {
-            return encodeByteArray(in);
-        } else if (NetStreamConstants.TYPE_SHORT == valueType) {
-            return encodeShort(in);
-        } else if (NetStreamConstants.TYPE_SHORT_ARRAY == valueType) {
-            return encodeShortArray(in);
-        } else if (NetStreamConstants.TYPE_INT == valueType) {
-            return encodeInt(in);
-        } else if (NetStreamConstants.TYPE_INT_ARRAY == valueType) {
-            return encodeIntArray(in);
-        } else if (NetStreamConstants.TYPE_LONG == valueType) {
-            return encodeLong(in);
-        } else if (NetStreamConstants.TYPE_LONG_ARRAY == valueType) {
-            return encodeLongArray(in);
-        } else if (NetStreamConstants.TYPE_FLOAT == valueType) {
-            return encodeFloat(in);
-        } else if (NetStreamConstants.TYPE_FLOAT_ARRAY == valueType) {
-            return encodeFloatArray(in);
-        } else if (NetStreamConstants.TYPE_DOUBLE == valueType) {
-            return encodeDouble(in);
-        } else if (NetStreamConstants.TYPE_DOUBLE_ARRAY == valueType) {
-            return encodeDoubleArray(in);
-        } else if (NetStreamConstants.TYPE_STRING == valueType) {
-            return encodeString(in);
-        } else if (NetStreamConstants.TYPE_ARRAY == valueType) {
-            return encodeArray(in);
-        } else if (NetStreamConstants.TYPE_NULL == valueType) {
-            return NULL_BUFFER;
-        }
-
-        LOGGER.warning(String.format("unknown value type %d\n", valueType));
-
-        return null;
-    }
-
-    protected ByteBuffer encodeArray(Object in) {
-        // TODO...
-        return null;
-    }
-
-    protected ByteBuffer encodeDoubleArray(Object in) {
-        Object[] data = (Object[]) in;
-
-        int ssize = varintSize(data.length);
-
-        ByteBuffer b = ByteBuffer.allocate(ssize + data.length * 8);
-
-        putVarint(b, data.length, ssize);
-
-        for (int i = 0; i < data.length; i++) {
-            b.putDouble((Double) data[i]);
-        }
-        b.rewind();
-        return b;
-    }
-
-    /**
-     * @param in The double to encode
-     * @return ByteBuffer with encoded double in it
-     */
-    protected ByteBuffer encodeDouble(Object in) {
-        ByteBuffer bb = ByteBuffer.allocate(8).putDouble((Double) in);
-        bb.rewind();
-        return bb;
-    }
-
-    /**
-     * @param in The float array to encode
-     * @return ByteBuffer with encoded float array in it
-     */
-    protected ByteBuffer encodeFloatArray(Object in) {
-        Object[] data = (Object[]) in;
-
-        int ssize = varintSize(data.length);
-
-        ByteBuffer b = ByteBuffer.allocate(ssize + data.length * 4);
-
-        putVarint(b, data.length, ssize);
-
-        for (int i = 0; i < data.length; i++) {
-            b.putFloat((Float) data[i]);
-        }
-        b.rewind();
-        return b;
-    }
-
-    /**
-     * @param in The float to encode
-     * @return ByteBuffer with encoded float in it
-     */
-    protected ByteBuffer encodeFloat(Object in) {
-        ByteBuffer b = ByteBuffer.allocate(4);
-        b.putFloat(((Float) in));
-        b.rewind();
-        return b;
-    }
-
-    /**
-     * @param in The long array to encode
-     * @return ByteBuffer with encoded long array in it
-     */
-    protected ByteBuffer encodeLongArray(Object in) {
-        return encodeVarintArray(in);
-    }
-
-    /**
-     * @param in The long to encode
-     * @return ByteBuffer with encoded long in it
-     */
-    protected ByteBuffer encodeLong(Object in) {
-        return encodeVarint(in);
-    }
-
-    /**
-     * @param in The integer array to encode
-     * @return ByteBuffer with encoded integer array in it
-     */
-    protected ByteBuffer encodeIntArray(Object in) {
-        return encodeVarintArray(in);
-    }
-
-    /**
-     * @param in The integer to encode
-     * @return ByteBuffer with encoded integer in it
-     */
-    protected ByteBuffer encodeInt(Object in) {
-        return encodeVarint(in);
-    }
-
-    /**
-     * @param in
-     * @return
-     */
-    protected ByteBuffer encodeShortArray(Object in) {
-        return encodeVarintArray(in);
-    }
-
-    /**
-     * @param in
-     * @return
-     */
-    protected ByteBuffer encodeShort(Object in) {
-        return encodeVarint(in);
-    }
-
-    /**
-     * @param in
-     * @return
-     */
-    protected ByteBuffer encodeByteArray(Object in) {
-        Object[] data = (Object[]) in;
-
-        int ssize = varintSize(data.length);
-
-        ByteBuffer b = ByteBuffer.allocate(ssize + data.length);
-
-        putVarint(b, data.length, ssize);
-
-        for (int i = 0; i < data.length; i++) {
-            b.put((Byte) data[i]);
-        }
-        b.rewind();
-        return b;
-    }
-
-    /**
-     * @param in
-     * @return
-     */
-    protected ByteBuffer encodeByte(Object in) {
-        ByteBuffer b = ByteBuffer.allocate(1);
-        b.put(((Byte) in));
-        b.rewind();
-        return b;
-    }
-
-    /**
-     * @param in
-     * @return
-     */
-    protected ByteBuffer encodeBooleanArray(Object in) {
-        Object[] data = (Object[]) in;
-
-        int ssize = varintSize(data.length);
-
-        ByteBuffer b = ByteBuffer.allocate(ssize + data.length);
-
-        putVarint(b, data.length, ssize);
-
-        for (int i = 0; i < data.length; i++) {
-            b.put((byte) ((Boolean) data[i] == false ? 0 : 1));
-        }
-        b.rewind();
-        return b;
-    }
-
-    /**
-     * @param in
-     * @return
-     */
-    protected ByteBuffer encodeBoolean(Object in) {
-        ByteBuffer b = ByteBuffer.allocate(1);
-        b.put((byte) (((Boolean) in) == false ? 0 : 1));
-        b.rewind();
-        return b;
-    }
-
-    protected ByteBuffer encodeVarintArray(Object in) {
-        Object[] data = (Object[]) in;
-        int[] sizes = new int[data.length];
-        long[] zigzags = new long[data.length];
-        int sumsizes = 0;
-        for (int i = 0; i < data.length; i++) {
-            long datum = ((Number) data[i]).longValue();
-            // signed integers encoding
-            // (n << 1) ^ (n >> 31)
-            // OK but java's negative values are two's complements...
-            zigzags[i] = datum > 0 ? (datum << 1) : ((Math.abs(datum) << 1) ^ 1);
-
-            sizes[i] = varintSize(zigzags[i]);
-            sumsizes += sizes[i];
-            //System.out.printf("i=%d, zigzag=%d, size=%d\n",i, zigzags[i], sizes[i]);
-        }
-
-        // the size of the size!
-        int ssize = varintSize(data.length);
-
-        ByteBuffer b = ByteBuffer.allocate(ssize + sumsizes);
-
-        putVarint(b, data.length, ssize);
-
-        for (int i = 0; i < data.length; i++) {
-            putVarint(b, zigzags[i], sizes[i]);
-        }
-        b.rewind();
-        //outBuffer(b);
-        return b;
-    }
 
     protected void doSend(ByteBuffer event) {
+        event.rewind();
         transport.send(event);
+    }
+
+    protected ByteBuffer getAndPrepareBuffer(String sourceId, long timeId, int eventType, int messageSize) {
+        if (!sourceId.equals(this.sourceId)) {
+            this.sourceId = sourceId;
+            sourceIdBuff = encodeString(sourceId);
+        }
+
+        streamBuffer.rewind();
+        sourceIdBuff.rewind();
+
+        int size = 4 +
+                + streamBuffer.capacity() // stream
+                + 1 // CMD
+                + sourceIdBuff.capacity() // source id
+                + getVarintSize(timeId) // timeId
+                + messageSize;
+
+        ByteBuffer bb = ByteBuffer.allocate(size);
+        bb
+                .putInt(size)
+                .put(streamBuffer)
+                .put((byte) eventType)
+                .put(sourceIdBuff)
+                .put(encodeUnsignedVarint(timeId));
+
+        return bb;
     }
 
     /*
@@ -470,32 +106,17 @@ public class NetStreamEncoder implements Sink {
      */
     public void graphAttributeAdded(String sourceId, long timeId,
                                     String attribute, Object value) {
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-
-        }
-
         ByteBuffer attrBuff = encodeString(attribute);
         int valueType = getType(value);
-        ByteBuffer valueBuff = encodeValue(value, valueType);
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        attrBuff.capacity() + // attribute id
-                        1 + // attr type
-                        valueBuff.capacity()); // attr value
+        ByteBuffer valueBuff = getEncodedValue(value, valueType);
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
+        int innerSize = attrBuff.capacity() // attribute id
+                + 1 // attr type
+                + valueBuff.capacity();
+
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_ADD_GRAPH_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_ADD_GRAPH_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(attrBuff)
                 .put((byte) valueType)
                 .put(valueBuff);
@@ -512,38 +133,22 @@ public class NetStreamEncoder implements Sink {
 	 */
     public void graphAttributeChanged(String sourceId, long timeId,
                                       String attribute, Object oldValue, Object newValue) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer attrBuff = encodeString(attribute);
         int oldValueType = getType(oldValue);
         int newValueType = getType(newValue);
 
-        ByteBuffer oldValueBuff = encodeValue(oldValue, oldValueType);
-        ByteBuffer newValueBuff = encodeValue(newValue, newValueType);
+        ByteBuffer oldValueBuff = getEncodedValue(oldValue, oldValueType);
+        ByteBuffer newValueBuff = getEncodedValue(newValue, newValueType);
 
+        int innerSize = attrBuff.capacity() + // attribute id
+                1 + // attr type
+                oldValueBuff.capacity() + // attr value
+                1 + // attr type
+                newValueBuff.capacity(); // attr value
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        attrBuff.capacity() + // attribute id
-                        1 + // attr type
-                        oldValueBuff.capacity() + // attr value
-                        1 + // attr type
-                        newValueBuff.capacity()); // attr value
-
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_CHG_GRAPH_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_CHG_GRAPH_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(attrBuff)
                 .put((byte) oldValueType)
                 .put(oldValueBuff)
@@ -563,30 +168,12 @@ public class NetStreamEncoder implements Sink {
      */
     public void graphAttributeRemoved(String sourceId, long timeId,
                                       String attribute) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer attrBuff = encodeString(attribute);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        attrBuff.capacity()
-        ); // attribute id
+        int innerSize = attrBuff.capacity();
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
-        buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_DEL_GRAPH_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
-                .put(attrBuff);
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_DEL_GRAPH_ATTR, innerSize);
+        buff.put(attrBuff);
 
         doSend(buff);
 
@@ -601,36 +188,29 @@ public class NetStreamEncoder implements Sink {
      */
     public void nodeAttributeAdded(String sourceId, long timeId, String nodeId,
                                    String attribute, Object value) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer nodeBuff = encodeString(nodeId);
         ByteBuffer attrBuff = encodeString(attribute);
         int valueType = getType(value);
-        ByteBuffer valueBuff = encodeValue(value, valueType);
+        ByteBuffer valueBuff = getEncodedValue(value, valueType);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        nodeBuff.capacity() + // nodeId
-                        attrBuff.capacity() + // attribute
-                        1 + // value type
-                        valueBuff.capacity() // value
-        );
+        if (nodeBuff == null) {
+            LOGGER.warning("nodeBuff is null");
+        }
+        if (attrBuff == null) {
+            LOGGER.warning("attrBuff is null");
+        }
+        if (valueBuff == null) {
+            LOGGER.warning("valueBuff is null");
+        }
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
+        int innerSize = nodeBuff.capacity() + // nodeId
+                attrBuff.capacity() + // attribute
+                1 + // value type
+                valueBuff.capacity();
 
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_ADD_NODE_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_ADD_NODE_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(nodeBuff)
                 .put(attrBuff)
                 .put((byte) valueType)
@@ -638,7 +218,6 @@ public class NetStreamEncoder implements Sink {
 
 
         doSend(buff);
-
     }
 
     /*
@@ -651,42 +230,25 @@ public class NetStreamEncoder implements Sink {
      */
     public void nodeAttributeChanged(String sourceId, long timeId,
                                      String nodeId, String attribute, Object oldValue, Object newValue) {
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
-
         ByteBuffer nodeBuff = encodeString(nodeId);
         ByteBuffer attrBuff = encodeString(attribute);
 
         int oldValueType = getType(oldValue);
         int newValueType = getType(newValue);
 
-        ByteBuffer oldValueBuff = encodeValue(oldValue, oldValueType);
-        ByteBuffer newValueBuff = encodeValue(newValue, newValueType);
+        ByteBuffer oldValueBuff = getEncodedValue(oldValue, oldValueType);
+        ByteBuffer newValueBuff = getEncodedValue(newValue, newValueType);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        nodeBuff.capacity() + // nodeId
-                        attrBuff.capacity() + // attribute
-                        1 + // value type
-                        oldValueBuff.capacity() + // value
-                        1 + // value type
-                        newValueBuff.capacity() // value
-        );
+        int innerSize = nodeBuff.capacity() + // nodeId
+                attrBuff.capacity() + // attribute
+                1 + // value type
+                oldValueBuff.capacity() + // value
+                1 + // value type
+                newValueBuff.capacity();
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_CHG_NODE_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_CHG_NODE_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(nodeBuff)
                 .put(attrBuff)
                 .put((byte) oldValueType)
@@ -706,33 +268,16 @@ public class NetStreamEncoder implements Sink {
      */
     public void nodeAttributeRemoved(String sourceId, long timeId,
                                      String nodeId, String attribute) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer nodeBuff = encodeString(nodeId);
         ByteBuffer attrBuff = encodeString(attribute);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        nodeBuff.capacity() + // nodeId
-                        attrBuff.capacity() // attribute
-        );
+        int innerSize = nodeBuff.capacity() + // nodeId
+                attrBuff.capacity(); // attribute
 
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_DEL_NODE_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_DEL_NODE_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(nodeBuff)
                 .put(attrBuff);
 
@@ -748,38 +293,21 @@ public class NetStreamEncoder implements Sink {
      */
     public void edgeAttributeAdded(String sourceId, long timeId, String edgeId,
                                    String attribute, Object value) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer edgeBuff = encodeString(edgeId);
         ByteBuffer attrBuff = encodeString(attribute);
 
         int valueType = getType(value);
 
-        ByteBuffer valueBuff = encodeValue(value, valueType);
+        ByteBuffer valueBuff = getEncodedValue(value, valueType);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        edgeBuff.capacity() + // nodeId
-                        attrBuff.capacity() + // attribute
-                        1 + // value type
-                        valueBuff.capacity() // value
-        );
+        int innerSize = edgeBuff.capacity() + // nodeId
+                attrBuff.capacity() + // attribute
+                1 + // value type
+                valueBuff.capacity(); // value
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_ADD_EDGE_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_ADD_EDGE_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(edgeBuff)
                 .put(attrBuff)
                 .put((byte) valueType) // value type
@@ -798,42 +326,24 @@ public class NetStreamEncoder implements Sink {
      */
     public void edgeAttributeChanged(String sourceId, long timeId,
                                      String edgeId, String attribute, Object oldValue, Object newValue) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer edgeBuff = encodeString(edgeId);
         ByteBuffer attrBuff = encodeString(attribute);
         int oldValueType = getType(oldValue);
         int newValueType = getType(newValue);
 
-        ByteBuffer oldValueBuff = encodeValue(oldValue, oldValueType);
-        ByteBuffer newValueBuff = encodeValue(newValue, newValueType);
+        ByteBuffer oldValueBuff = getEncodedValue(oldValue, oldValueType);
+        ByteBuffer newValueBuff = getEncodedValue(newValue, newValueType);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        edgeBuff.capacity() + // nodeId
-                        attrBuff.capacity() + // attribute
-                        1 + // value type
-                        oldValueBuff.capacity() + // value
-                        1 + // value type
-                        newValueBuff.capacity()  // value
-        );
+        int innerSize = edgeBuff.capacity() + // nodeId
+                attrBuff.capacity() + // attribute
+                1 + // value type
+                oldValueBuff.capacity() + // value
+                1 + // value type
+                newValueBuff.capacity();  // value
 
-
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_CHG_EDGE_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_CHG_EDGE_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(edgeBuff)
                 .put(attrBuff)
                 .put((byte) oldValueType)
@@ -853,33 +363,15 @@ public class NetStreamEncoder implements Sink {
      */
     public void edgeAttributeRemoved(String sourceId, long timeId,
                                      String edgeId, String attribute) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer edgeBuff = encodeString(edgeId);
         ByteBuffer attrBuff = encodeString(attribute);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        edgeBuff.capacity() + // nodeId
-                        attrBuff.capacity() // attribute
-        );
+        int innerSize = edgeBuff.capacity() + // nodeId
+                attrBuff.capacity(); // attribute
 
-
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_DEL_EDGE_ATTR, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_DEL_EDGE_ATTR)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(edgeBuff)
                 .put(attrBuff);
 
@@ -894,33 +386,12 @@ public class NetStreamEncoder implements Sink {
      * java.lang.String)
      */
     public void nodeAdded(String sourceId, long timeId, String nodeId) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer nodeBuff = encodeString(nodeId);
 
+        int innerSize = nodeBuff.capacity();
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        nodeBuff.capacity() // nodeId
-        );
-
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
-
-        buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_ADD_NODE)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
-                .put(nodeBuff);
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_ADD_NODE, innerSize);
+        buff.put(nodeBuff);
 
         doSend(buff);
     }
@@ -932,30 +403,12 @@ public class NetStreamEncoder implements Sink {
      * long, java.lang.String)
      */
     public void nodeRemoved(String sourceId, long timeId, String nodeId) {
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer nodeBuff = encodeString(nodeId);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        nodeBuff.capacity() // nodeId
-        );
+        int innerSize = nodeBuff.capacity();
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
-
-        buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_DEL_NODE)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
-                .put(nodeBuff);
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_DEL_NODE, innerSize);
+        buff.put(nodeBuff);
 
         doSend(buff);
     }
@@ -968,40 +421,22 @@ public class NetStreamEncoder implements Sink {
      */
     public void edgeAdded(String sourceId, long timeId, String edgeId,
                           String fromNodeId, String toNodeId, boolean directed) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer edgeBuff = encodeString(edgeId);
         ByteBuffer fromNodeBuff = encodeString(fromNodeId);
         ByteBuffer toNodeBuff = encodeString(toNodeId);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        edgeBuff.capacity() + // edge
-                        fromNodeBuff.capacity() + // from nodeId
-                        toNodeBuff.capacity() + // to nodeId
-                        1 // direction
-        );
+        int innerSize = edgeBuff.capacity() + // edge
+                fromNodeBuff.capacity() + // from nodeId
+                toNodeBuff.capacity() + // to nodeId
+                1; // direction
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_ADD_EDGE, innerSize);
 
         buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_ADD_EDGE)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
                 .put(edgeBuff)
                 .put(fromNodeBuff)
                 .put(toNodeBuff)
                 .put((byte) (!directed ? 0 : 1));
-
 
         doSend(buff);
     }
@@ -1013,31 +448,12 @@ public class NetStreamEncoder implements Sink {
      * long, java.lang.String)
      */
     public void edgeRemoved(String sourceId, long timeId, String edgeId) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
         ByteBuffer edgeBuff = encodeString(edgeId);
 
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) + // timeId
-                        edgeBuff.capacity()  // edge
-        );
+        int innerSize = edgeBuff.capacity();
 
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
-
-        buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_DEL_EDGE)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
-                .put(edgeBuff);
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_DEL_EDGE, innerSize);
+        buff.put(edgeBuff);
 
         doSend(buff);
     }
@@ -1049,28 +465,7 @@ public class NetStreamEncoder implements Sink {
      * long)
      */
     public void graphCleared(String sourceId, long timeId) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId)
-        );
-
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
-
-        buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_CLEARED)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId));
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_CLEARED, 0);
         doSend(buff);
     }
 
@@ -1081,30 +476,8 @@ public class NetStreamEncoder implements Sink {
      * long, double)
      */
     public void stepBegins(String sourceId, long timeId, double step) {
-
-        if (!sourceId.equals(this.sourceId)) {
-            this.sourceId = sourceId;
-            sourceIdBuff = encodeString(sourceId);
-        }
-
-        ByteBuffer buff = ByteBuffer.allocate(
-                streamBuffer.capacity() + // stream
-                        1 + // CMD
-                        sourceIdBuff.capacity() + // source id
-                        varintSize(timeId) +
-                        8 // time
-        );
-
-        streamBuffer.rewind();
-        sourceIdBuff.rewind();
-
-        buff
-                .put(streamBuffer)
-                .put((byte) NetStreamConstants.EVENT_STEP)
-                .put(sourceIdBuff)
-                .put(encodeUnsignedVarint(timeId))
-                .putDouble(step);
-
+        ByteBuffer buff = getAndPrepareBuffer(sourceId, timeId, NetStreamConstants.EVENT_STEP, 8);
+        buff.putDouble(step);
 
         doSend(buff);
     }

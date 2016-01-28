@@ -29,53 +29,47 @@
  * The fact that you are presently reading this means that you have had
  * knowledge of the CeCILL-C and LGPL licenses and that you accept their terms.
  */
-package org.graphstream.stream.netstream.test;
+package org.graphstream.stream.webSocket;
 
-import org.graphstream.stream.netstream.NetStreamUtils;
-import org.junit.Assert;
-import org.junit.Test;
-
-import java.nio.ByteBuffer;
+import org.graphstream.algorithm.generator.BarabasiAlbertGenerator;
+import org.graphstream.boids.BoidGenerator;
+import org.graphstream.graph.Graph;
+import org.graphstream.graph.implementations.DefaultGraph;
+import org.graphstream.stream.webSocket.WebSocketFilter;
+import org.graphstream.stream.webSocket.WebSocketPipe;
+import org.java_websocket.WebSocket;
 
 /**
  * @since 23/01/16.
  */
-public class TestNetStreamUtils {
-    String randomChars = "abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-*+_";
+public class Demo {
+    public static void main(String... args) throws Exception {
+        DefaultGraph g = new DefaultGraph("g");
+        final WebSocketPipe pipe = new WebSocketPipe(g);
+        BoidGenerator gen = new BoidGenerator();
 
-    protected String getRandomString(int size) {
-        String s = "";
+        g.addElementSink(pipe);
 
-        for (int i = 0; i < size; i++) {
-            int ind = (int) ((randomChars.length() - 1) * Math.random());
-            s += randomChars.substring(ind, ind + 1);
-        }
+        pipe.addWebSocketFilter(new WebSocketFilter() {
+            @Override
+            public boolean authorizeWebSocketConnection(WebSocket webSocket) {
+                return true;
+            }
+        });
 
-        return s;
-    }
+        pipe.startServer();
+        System.out.println("WebSocket Server started...");
 
-    @Test
-    public void testVarintSize() {
-        int p = 7;
+        gen.addSink(g);
+        gen.begin();
 
-        for (int i = 1; i < 9; i++) {
-            long l = (1L << p) - 1;
-
-            Assert.assertEquals(i, NetStreamUtils.getVarintSize(l));
-            Assert.assertEquals(i + 1, NetStreamUtils.getVarintSize(l + 1));
-
-            p += 7;
-        }
-    }
-
-    @Test
-    public void testEncodeDecodeString() {
-        for (int i = 0; i < 100; i++) {
-            String s = getRandomString(64);
-            ByteBuffer bb = NetStreamUtils.encodeString(s);
-            String r = NetStreamUtils.decodeString(bb);
-
-            Assert.assertEquals(s, r);
+        while(true) {
+            gen.nextEvents();
+            try {
+                Thread.sleep(100);
+            } catch(Exception e) {
+                e.printStackTrace();
+            }
         }
     }
 }

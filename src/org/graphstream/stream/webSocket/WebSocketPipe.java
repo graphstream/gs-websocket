@@ -31,9 +31,266 @@
  */
 package org.graphstream.stream.webSocket;
 
+import org.graphstream.stream.Pipe;
+import org.graphstream.stream.Replayable;
+import org.graphstream.stream.SourceBase;
+import org.graphstream.stream.netstream.NetStreamEncoder;
+import org.graphstream.stream.netstream.NetStreamTransport;
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
+import java.nio.channels.InterruptedByTimeoutException;
+import java.util.Collection;
+import java.util.LinkedList;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.logging.Logger;
+
 /**
- * @author n3mo
  * @since 22/01/16.
  */
-public class WebSocketPipe {
+public class WebSocketPipe extends SourceBase implements Pipe {
+    private static final Logger LOGGER = Logger.getLogger(WebSocketPipe.class.getName());
+
+    public static final int DEFAULT_PORT = 10042;
+
+    protected WSServer server;
+    protected NetStreamEncoder encoder;
+
+    protected LinkedList<WebSocketFilter> filters;
+
+    protected Replayable replayable;
+
+    public WebSocketPipe() throws UnknownHostException {
+        this(DEFAULT_PORT);
+    }
+
+    public WebSocketPipe(int port) throws UnknownHostException {
+        this(null, port);
+    }
+
+    public WebSocketPipe(Replayable replayable) throws UnknownHostException {
+        this(replayable, DEFAULT_PORT);
+    }
+
+    public WebSocketPipe(Replayable replayable, int port) throws UnknownHostException {
+        server = new WSServer(port);
+        encoder = new NetStreamEncoder("wss", server);
+        filters = new LinkedList<WebSocketFilter>();
+
+        this.replayable = replayable;
+    }
+
+    public void addWebSocketFilter(WebSocketFilter filter) {
+        synchronized (filters) {
+            filters.add(filter);
+        }
+    }
+
+    public void removeWebSocketFilter(WebSocketFilter filter) {
+        synchronized (filters) {
+            filters.remove(filter);
+        }
+    }
+
+    public void startServer() {
+        server.start();
+        SERVERS.offer(server);
+        LOGGER.info(String.format("WebSocket Server is listenning on %d", server.getPort()));
+    }
+
+    public void stopServer() throws InterruptedException {
+        try {
+            server.stop();
+            SERVERS.remove(server);
+        } catch (IOException e) {
+            LOGGER.warning("exception while stopping ws server: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void graphAttributeAdded(String sourceId, long timeId, String attribute, Object value) {
+        encoder.graphAttributeAdded(sourceId, timeId, attribute, value);
+    }
+
+    @Override
+    public void graphAttributeChanged(String sourceId, long timeId, String attribute, Object oldValue, Object newValue) {
+        encoder.graphAttributeChanged(sourceId, timeId, attribute, oldValue, newValue);
+    }
+
+    @Override
+    public void graphAttributeRemoved(String sourceId, long timeId, String attribute) {
+        encoder.graphAttributeRemoved(sourceId, timeId, attribute);
+    }
+
+    @Override
+    public void nodeAttributeAdded(String sourceId, long timeId, String nodeId, String attribute, Object value) {
+        encoder.nodeAttributeAdded(sourceId, timeId, nodeId, attribute, value);
+    }
+
+    @Override
+    public void nodeAttributeChanged(String sourceId, long timeId, String nodeId, String attribute, Object oldValue, Object newValue) {
+        encoder.nodeAttributeChanged(sourceId, timeId, nodeId, attribute, oldValue, newValue);
+    }
+
+    @Override
+    public void nodeAttributeRemoved(String sourceId, long timeId, String nodeId, String attribute) {
+        encoder.nodeAttributeRemoved(sourceId, timeId, nodeId, attribute);
+    }
+
+    @Override
+    public void edgeAttributeAdded(String sourceId, long timeId, String edgeId, String attribute, Object value) {
+        encoder.edgeAttributeAdded(sourceId, timeId, edgeId, attribute, value);
+    }
+
+    @Override
+    public void edgeAttributeChanged(String sourceId, long timeId, String edgeId, String attribute, Object oldValue, Object newValue) {
+        encoder.edgeAttributeChanged(sourceId, timeId, edgeId, attribute, oldValue, newValue);
+    }
+
+    @Override
+    public void edgeAttributeRemoved(String sourceId, long timeId, String edgeId, String attribute) {
+        encoder.edgeAttributeRemoved(sourceId, timeId, edgeId, attribute);
+    }
+
+    @Override
+    public void nodeAdded(String sourceId, long timeId, String nodeId) {
+        encoder.nodeAdded(sourceId, timeId, nodeId);
+    }
+
+    @Override
+    public void nodeRemoved(String sourceId, long timeId, String nodeId) {
+        encoder.nodeRemoved(sourceId, timeId, nodeId);
+    }
+
+    @Override
+    public void edgeAdded(String sourceId, long timeId, String edgeId, String fromNodeId, String toNodeId, boolean directed) {
+        encoder.edgeAdded(sourceId, timeId, edgeId, fromNodeId, toNodeId, directed);
+    }
+
+    @Override
+    public void edgeRemoved(String sourceId, long timeId, String edgeId) {
+        encoder.edgeRemoved(sourceId, timeId, edgeId);
+    }
+
+    @Override
+    public void graphCleared(String sourceId, long timeId) {
+        encoder.graphCleared(sourceId, timeId);
+    }
+
+    @Override
+    public void stepBegins(String sourceId, long timeId, double step) {
+        encoder.stepBegins(sourceId, timeId, step);
+    }
+
+    private static final ConcurrentLinkedQueue<WSServer> SERVERS = new ConcurrentLinkedQueue<>();
+
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                if (SERVERS.size() > 0) {
+                    System.out.print("Stopping remaining WebSocket servers...");
+
+                    while (SERVERS.size() > 0) {
+                        try {
+                            SERVERS.poll().stop();
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
+                    }
+
+                    System.out.println("  done");
+                }
+            }
+        }));
+    }
+
+    class WSServer extends WebSocketServer implements NetStreamTransport {
+        public WSServer(int port) throws UnknownHostException {
+            this(new InetSocketAddress(port));
+        }
+
+        public WSServer(InetSocketAddress address) {
+            super(address);
+        }
+
+        @Override
+        public void onOpen(WebSocket webSocket, ClientHandshake clientHandshake) {
+            LOGGER.info("websocket opened: " + webSocket.getRemoteSocketAddress());
+
+            synchronized (filters) {
+                for (WebSocketFilter filter : filters) {
+                    if (!filter.authorizeWebSocketConnection(webSocket)) {
+                        webSocket.close();
+                        return;
+                    }
+                }
+            }
+
+            replay(webSocket);
+        }
+
+        @Override
+        public void onClose(WebSocket webSocket, int i, String s, boolean b) {
+            LOGGER.info("webSocket closed: " + webSocket.getRemoteSocketAddress());
+        }
+
+        @Override
+        public void onMessage(WebSocket webSocket, String s) {
+            LOGGER.info("receive message: " + s);
+        }
+
+        @Override
+        public void onMessage(WebSocket webSocket, ByteBuffer buffer) {
+            LOGGER.info("receive binary data");
+        }
+
+        @Override
+        public void onError(WebSocket webSocket, Exception e) {
+            LOGGER.warning("webSocket error : " + (webSocket == null ? "" : webSocket.getRemoteSocketAddress()) + ", " + e.getClass().getName() + " : " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        void sendToAll(String text) {
+            Collection<WebSocket> con = connections();
+
+            synchronized (con) {
+                for (WebSocket c : con) {
+                    c.send(text);
+                }
+            }
+        }
+
+        @Override
+        public void send(ByteBuffer buffer) {
+            Collection<WebSocket> con = connections();
+
+            synchronized (con) {
+                for (WebSocket ws : con) {
+                    buffer.rewind();
+                    ws.send(buffer);
+                }
+            }
+        }
+
+        public void replay(final WebSocket webSocket) {
+            if (replayable != null) {
+                Replayable.Controller c = replayable.getReplayController();
+                NetStreamEncoder netStreamEncoder = new NetStreamEncoder("wss-replay", new NetStreamTransport() {
+                    @Override
+                    public void send(ByteBuffer buffer) {
+                        webSocket.send(buffer);
+                    }
+                });
+
+                c.addSink(netStreamEncoder);
+                c.replay();
+            }
+        }
+    }
 }
