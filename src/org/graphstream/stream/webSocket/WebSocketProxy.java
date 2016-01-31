@@ -44,7 +44,6 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
-import java.nio.channels.InterruptedByTimeoutException;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -53,8 +52,8 @@ import java.util.logging.Logger;
 /**
  * @since 22/01/16.
  */
-public class WebSocketPipe extends SourceBase implements Pipe {
-    private static final Logger LOGGER = Logger.getLogger(WebSocketPipe.class.getName());
+public class WebSocketProxy extends SourceBase implements Pipe {
+    private static final Logger LOGGER = Logger.getLogger(WebSocketProxy.class.getName());
 
     public static final int DEFAULT_PORT = 10042;
 
@@ -65,19 +64,19 @@ public class WebSocketPipe extends SourceBase implements Pipe {
 
     protected Replayable replayable;
 
-    public WebSocketPipe() throws UnknownHostException {
+    public WebSocketProxy() throws UnknownHostException {
         this(DEFAULT_PORT);
     }
 
-    public WebSocketPipe(int port) throws UnknownHostException {
+    public WebSocketProxy(int port) throws UnknownHostException {
         this(null, port);
     }
 
-    public WebSocketPipe(Replayable replayable) throws UnknownHostException {
+    public WebSocketProxy(Replayable replayable) throws UnknownHostException {
         this(replayable, DEFAULT_PORT);
     }
 
-    public WebSocketPipe(Replayable replayable, int port) throws UnknownHostException {
+    public WebSocketProxy(Replayable replayable, int port) throws UnknownHostException {
         server = new WSServer(port);
         encoder = new NetStreamEncoder("wss", server);
         filters = new LinkedList<WebSocketFilter>();
@@ -253,7 +252,6 @@ public class WebSocketPipe extends SourceBase implements Pipe {
         @Override
         public void onError(WebSocket webSocket, Exception e) {
             LOGGER.warning("webSocket error : " + (webSocket == null ? "" : webSocket.getRemoteSocketAddress()) + ", " + e.getClass().getName() + " : " + e.getMessage());
-            e.printStackTrace();
         }
 
         void sendToAll(String text) {
